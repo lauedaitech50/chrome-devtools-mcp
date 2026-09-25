@@ -741,4 +741,188 @@ Please consult [these instructions](./docs/debugging-android.md).
 
 ## Known limitations
 
-See [Troubleshooting](./docs/troubleshooting.md).
+See [Troubleshooting](./docs/troubleshooting.md).import { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient } from "@zerodev/sdk"
+import { KERNEL_V3_1, getEntryPoint } from "@zerodev/sdk/constants"
+import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator"
+import { http, createPublicClient, zeroAddress } from "viem"
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
+import { baseSepolia } from "viem/chains"
+ 
+const ZERODEV_RPC = 'https://rpc.zerodev.app/api/v3/61016d2a-e0df-4350-929c-d5f2110700d1/chain/84532'
+
+const chain = baseSepolia 
+const entryPoint = getEntryPoint("0.7")
+const kernelVersion = KERNEL_V3_1
+ 
+const main = async () => {
+  // Construct a signer
+  const privateKey = generatePrivateKey()
+  const signer = privateKeyToAccount(privateKey)
+ 
+  // Construct a public client
+  const publicClient = createPublicClient({
+    // Use your own RPC provider in production (e.g. Infura/Alchemy).
+    transport: http(ZERODEV_RPC),
+    chain
+  })
+ 
+  // Construct a validator
+  const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+    signer,
+    entryPoint,
+    kernelVersion
+  })
+ 
+  // Construct a Kernel account
+  const account = await createKernelAccount(publicClient, {
+    plugins: {
+      sudo: ecdsaValidator,
+    },
+    entryPoint,
+    kernelVersion
+  })
+ 
+  const zerodevPaymaster = createZeroDevPaymasterClient({
+    chain,
+    transport: http(ZERODEV_RPC),
+  })
+ 
+  // Construct a Kernel account client
+  const kernelClient = createKernelAccountClient({
+    account,
+    chain,
+    bundlerTransport: http(ZERODEV_RPC),
+    // Required - the public client
+    client: publicClient,
+    paymaster: {
+        getPaymasterData(userOperation) {
+            return zerodevPaymaster.sponsorUserOperation({userOperation})
+        }
+    },
+  })
+ 
+  const accountAddress = kernelClient.account.address
+  console.log("My account:", accountAddress)
+ 
+  // Send a UserOp
+  const userOpHash = await kernelClient.sendUserOperation({
+      callData: await kernelClient.account.encodeCalls([{
+        to: zeroAddress,
+        value: BigInt(0),
+        data: "0x",
+      }]),
+  })
+ 
+  console.log("UserOp hash:", userOpHash)
+  console.log("Waiting for UserOp to complete...")
+ 
+  await kernelClient.waitForUserOperationReceipt({
+    hash: userOpHash,
+    timeout: 1000 * 15,
+  })
+ 
+  console.log("UserOp completed: https://base-sepolia.blockscout.com/op/" + userOpHash)
+ 
+  process.exit()
+}
+ 
+main()mkdir zerodev
+cd zerodev
+npm init -yimport csv
+import re
+from bs4 import BeautifulSoup
+
+# Matches patterns like "Oct 14, 2025, 3:20:15 PM UTC" or "14 Oct 2025, 15:20:15"
+TIMESTAMP_PATTERN = re.compile(
+    r"[A-Za-z]{3}\s+\d{1,2},\s+\d{4},\s+\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?(?:\s+[A-Z]{2,4})?"
+)
+
+def parse_search_history(html_path, csv_path):
+    print(f"Loading {html_path}...")
+    
+    # Using 'lxml' is 3-5x faster than 'html.parser' for massive HTML trees
+    with open(html_path, "r", encoding="utf-8", errors="replace") as f:
+        soup = BeautifulSoup(f, "lxml")
+
+    records = []
+
+    # Target standard MDL cells from Google Takeout
+    cells = soup.find_all("div", class_=re.compile(r"(content-cell|outer-cell)"))
+
+    for cell in cells:
+        link = cell.find("a")
+        if not link:
+            continue
+
+        cell_text = cell.get_text(separator="\n", strip=True)
+        lines = [line.strip() for line in cell_text.splitlines() if line.strip()]
+
+        if not lines:
+            continue
+
+        # Detect entry type (Searched for vs. Visited)
+        action_type = "Search"
+        if lines[0].startswith("Visited"):
+            action_type = "Visit"
+        elif not lines[0].startswith("Searched for"):
+            # Skip non-activity utility blocks
+            continue
+
+        query_or_title = link.get_text(strip=True)
+        url = link.get("href", "")
+
+        # Extract timestamp using regex matching instead of relying solely on the last line
+        timestamp = ""
+        for line in reversed(lines):
+            match = TIMESTAMP_PATTERN.search(line)
+            if match:
+                timestamp = match.group(0)
+                break
+        
+        # Fallback to the last line if regex doesn't match a timezone standard
+        if not timestamp and len(lines) > 1:
+            timestamp = lines[-1]
+
+        records.append({
+            "type": action_type,
+            "timestamp": timestamp,
+            "query": query_or_title,
+            "url": url
+        })
+
+    # Fallback for table-based browser exports
+    if not records:
+        table_rows = soup.find_all("tr")
+        for row in table_rows:
+            cols = row.find_all(["td", "th"])
+            if len(cols) >= 2:
+                col_texts = [c.get_text(strip=True) for c in cols]
+                link = cols[1].find("a")
+                records.append({
+                    "type": "Search",
+                    "timestamp": col_texts[0],
+                    "query": col_texts[1],
+                    "url": link["href"] if link and link.has_attr("href") else ""
+                })
+
+    # Write to CSV
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as out:
+        fieldnames = ["type", "timestamp", "query", "url"]
+        writer = csv.DictWriter(out, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+
+    print(f"Done: {len(records)} entries saved to {csv_path}")
+
+
+if __name__ == "__main__":
+    parse_search_history("search-history.html", "search_history.csv")
+from bs4 import BeautifulSoup
+
+with open("search-history.html", "r", encoding="utf-8") as f:
+    soup = BeautifulSoup(f, "html.parser")
+
+# Example: extract text content or specific links
+for link in soup.find_all("a"):
+    print(link.get_text(), "->", link.get("href"))
+https://youtu.be/gdDctjC10SY?t=37&si=owWrb7zzy86-D4WMhttps://youtu.be/gdDctjC10SY?t=37&si=owWrb7zzy86-D4WM
