@@ -1,4 +1,370 @@
-# Chrome DevTools MCP
+import { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient } from "@zerodev/sdk"
+import { KERNEL_V3_1, getEntryPoint } from "@zerodev/sdk/constants"
+import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator"
+import { http, createPublicClient, zeroAddress } from "viem"
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
+import { baseSepolia } from "viem/chains"
+ 
+const ZERODEV_RPC = 'https://rpc.zerodev.app/api/v3/61016d2a-e0df-4350-929c-d5f2110700d1/chain/84532'
+
+const chain = baseSepolia 
+const entryPoint = getEntryPoint("0.7")
+const kernelVersion = KERNEL_V3_1
+ 
+const main = async () => {
+  // Construct a signer
+  const privateKey = generatePrivateKey()
+  const signer = privateKeyToAccount(privateKey)
+ 
+  // Construct a public client
+  const publicClient = createPublicClient({
+    // Use your own RPC provider in production (e.g. Infura/Alchemy).
+    transport: http(ZERODEV_RPC),
+    chain
+  })
+ 
+  // Construct a validator
+  const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+    signer,
+    entryPoint,
+    kernelVersion
+  })
+ 
+  // Construct a Kernel account
+  const account = await createKernelAccount(publicClient, {
+    plugins: {
+      sudo: ecdsaValidator,
+    },
+    entryPoint,
+    kernelVersion
+  })
+ 
+  const zerodevPaymaster = createZeroDevPaymasterClient({
+    chain,
+    transport: http(ZERODEV_RPC),
+  })
+ 
+  // Construct a Kernel account client
+  const kernelClient = createKernelAccountClient({
+    account,
+    chain,
+    bundlerTransport: http(ZERODEV_RPC),
+    // Required - the public client
+    client: publicClient,
+    paymaster: {
+        getPaymasterData(userOperation) {
+            return zerodevPaymaster.sponsorUserOperation({userOperation})
+        }
+    },
+  })
+ 
+  const accountAddress = kernelClient.account.address
+  console.log("My account:", accountAddress)
+ 
+  // Send a UserOp
+  const userOpHash = await kernelClient.sendUserOperation({
+      callData: await kernelClient.account.encodeCalls([{
+        to: zeroAddress,
+        value: BigInt(0),
+        data: "0x",
+      }]),
+  })
+ 
+  console.log("UserOp hash:", userOpHash)
+  console.log("Waiting for UserOp to complete...")
+ 
+  await kernelClient.waitForUserOperationReceipt({
+    hash: userOpHash,
+    timeout: 1000 * 15,
+  })
+ 
+  console.log("UserOp completed: https://base-sepolia.blockscout.com/op/" + userOpHash)
+ 
+  process.exit()
+}
+ 
+main()The current state of your Search Services History setting is ON, while auto-deletion is OFF.
+Additionally, there is no activity recorded under your current view.
+Would you like assistance with turning off your history setting, enabling auto-deletion, or finding history from a specific Google service?
+
+The documents cover the Aug 07, 2025 Bank of England Monetary Policy press conference. Governor Andrew Bailey announced a 0.25 percentage point cut to the Bank Rate to 4%. Despite a projected temporary inflation peak of 4% in Sep 2025, the committee expects disinflationary trends and economic slack to return inflation to the 2% target by Q2 2027 through a cautious, data-dependent approach.The current state of your Search Services History setting is ON, while auto-deletion is OFF.
+Additionally, there is no activity recorded under your current view.
+Would you like assistance with turning off your history setting, enabling auto-deletion, or finding history from a specific Google service?
+
+import csv
+import re
+from bs4 import BeautifulSoup
+
+# Matches patterns like "Oct 14, 2025, 3:20:15 PM UTC" or "14 Oct 2025, 15:20:15"
+TIMESTAMP_PATTERN = re.compile(
+    r"[A-Za-z]{3}\s+\d{1,2},\s+\d{4},\s+\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?(?:\s+[A-Z]{2,4})?"
+)
+
+def parse_search_history(html_path, csv_path):
+    print(f"Loading {html_path}...")
+    
+    # Using 'lxml' is 3-5x faster than 'html.parser' for massive HTML trees
+    with open(html_path, "r", encoding="utf-8", errors="replace") as f:
+        soup = BeautifulSoup(f, "lxml")
+
+    records = []
+
+    # Target standard MDL cells from Google Takeout
+    cells = soup.find_all("div", class_=re.compile(r"(content-cell|outer-cell)"))
+
+    for cell in cells:
+        link = cell.find("a")
+        if not link:
+            continue
+
+        cell_text = cell.get_text(separator="\n", strip=True)
+        lines = [line.strip() for line in cell_text.splitlines() if line.strip()]
+
+        if not lines:
+            continue
+
+        # Detect entry type (Searched for vs. Visited)
+        action_type = "Search"
+        if lines[0].startswith("Visited"):
+            action_type = "Visit"
+        elif not lines[0].startswith("Searched for"):
+            # Skip non-activity utility blocks
+            continue
+
+        query_or_title = link.get_text(strip=True)
+        url = link.get("href", "")
+
+        # Extract timestamp using regex matching instead of relying solely on the last line
+        timestamp = ""
+        for line in reversed(lines):
+            match = TIMESTAMP_PATTERN.search(line)
+            if match:
+                timestamp = match.group(0)
+                break
+        
+        # Fallback to the last line if regex doesn't match a timezone standard
+        if not timestamp and len(lines) > 1:
+            timestamp = lines[-1]
+
+        records.append({
+            "type": action_type,
+            "timestamp": timestamp,
+            "query": query_or_title,
+            "url": url
+        })
+
+    # Fallback for table-based browser exports
+    if not records:
+        table_rows = soup.find_all("tr")
+        for row in table_rows:
+            cols = row.find_all(["td", "th"])
+            if len(cols) >= 2:
+                col_texts = [c.get_text(strip=True) for c in cols]
+                link = cols[1].find("a")
+                records.append({
+                    "type": "Search",
+                    "timestamp": col_texts[0],
+                    "query": col_texts[1],
+                    "url": link["href"] if link and link.has_attr("href") else ""
+                })
+
+    # Write to CSV
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as out:
+        fieldnames = ["type", "timestamp", "query", "url"]
+        writer = csv.DictWriter(out, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+
+    print(f"Done: {len(records)} entries saved to {csv_path}")
+
+
+if __name__ == "__main__":
+    parse_search_history("search-history.html", "search_history.csv")
+import csv
+import re
+from bs4 import BeautifulSoup
+
+# Matches patterns like "Oct 14, 2025, 3:20:15 PM UTC" or "14 Oct 2025, 15:20:15"
+TIMESTAMP_PATTERN = re.compile(
+    r"[A-Za-z]{3}\s+\d{1,2},\s+\d{4},\s+\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?(?:\s+[A-Z]{2,4})?"
+)
+
+def parse_search_history(html_path, csv_path):
+    print(f"Loading {html_path}...")
+    
+    # Using 'lxml' is 3-5x faster than 'html.parser' for massive HTML trees
+    with open(html_path, "r", encoding="utf-8", errors="replace") as f:
+        soup = BeautifulSoup(f, "lxml")
+
+    records = []
+
+    # Target standard MDL cells from Google Takeout
+    cells = soup.find_all("div", class_=re.compile(r"(content-cell|outer-cell)"))
+
+    for cell in cells:
+        link = cell.find("a")
+        if not link:
+            continue
+
+        cell_text = cell.get_text(separator="\n", strip=True)
+        lines = [line.strip() for line in cell_text.splitlines() if line.strip()]
+
+        if not lines:
+            continue
+
+        # Detect entry type (Searched for vs. Visited)
+        action_type = "Search"
+        if lines[0].startswith("Visited"):
+            action_type = "Visit"
+        elif not lines[0].startswith("Searched for"):
+            # Skip non-activity utility blocks
+            continue
+
+        query_or_title = link.get_text(strip=True)
+        url = link.get("href", "")
+
+        # Extract timestamp using regex matching instead of relying solely on the last line
+        timestamp = ""
+        for line in reversed(lines):
+            match = TIMESTAMP_PATTERN.search(line)
+            if match:
+                timestamp = match.group(0)
+                break
+        
+        # Fallback to the last line if regex doesn't match a timezone standard
+        if not timestamp and len(lines) > 1:
+            timestamp = lines[-1]
+
+        records.append({
+            "type": action_type,
+            "timestamp": timestamp,
+            "query": query_or_title,
+            "url": url
+        })
+
+    # Fallback for table-based browser exports
+    if not records:
+        table_rows = soup.find_all("tr")
+        for row in table_rows:
+            cols = row.find_all(["td", "th"])
+            if len(cols) >= 2:
+                col_texts = [c.get_text(strip=True) for c in cols]
+                link = cols[1].find("a")
+                records.append({
+                    "type": "Search",
+                    "timestamp": col_texts[0],
+                    "query": col_texts[1],
+                    "url": link["href"] if link and link.has_attr("href") else ""
+                })
+
+    # Write to CSV
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as out:
+        fieldnames = ["type", "timestamp", "query", "url"]
+        writer = csv.DictWriter(out, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+
+    print(f"Done: {len(records)} entries saved to {csv_path}")
+
+
+if __name__ == "__main__":
+    parse_search_history("search-history.html", "search_history.csv")
+http://go/chrome-devtools:automatic-workspace-discovery-proposalhttps://docs.google.com/document/d/1cBIzJqClFd7g3ly6P3sXljUqv8JrgD_3DNC_Qy3SOws?tab=t.k9bol79q8ng8{
+  "ns": "yt",
+  "el": "detailpage",
+  "cpn": "1PH1yXN6B2uIq_Xo",
+  "ver": 2,
+  "cmt": "179",
+  "fmt": "396",
+  "fs": "0",
+  "rt": "116.167",
+  "euri": "",
+  "lact": 1,
+  "cl": "982145520",
+  "mos": 0,
+  "state": "4",
+  "volume": 100,
+  "subscribed": "1",
+  "cbrand": "generic",
+  "cbr": "Chrome Mobile",
+  "cbrver": "152.0.0.0",
+  "c": "MWEB",
+  "cver": "2.20260918.00.00",
+  "cplayer": "UNIPLAYER",
+  "cmodel": "android 10.0",
+  "cos": "Android",
+  "cosver": "10",
+  "cplatform": "MOBILE",
+  "hl": "en_US",
+  "cr": "CA",
+  "len": "250.281",
+  "fexp": "v1,100673025,627,-76730075,61067,494888,26564111,31835,2821,124674,117689,9252,16509,23206,68547,1248,10877,20030,2877,12228,25059,4174,12719,17727,18706,26008,5237,7779,16087,6620,2784,5382,18444,9330,170,1840,14783,38848,41206,20589,4199,30114,9181,15416,17458,20109,6032,1168,372,3793,3966,34320,38312,1938,277,4358,8498,4367,9717,3613,7196,4419,2,14922,3843,17160,1339,9618,1287,3242,2,17340,9038,1537,1238,1568,21090,2420,653,2707,355,14240,2071,6086,971,1237,34,2155,14549,2307,4850,10936,1712,4875,6185,2600,726,14876,4092,813",
+  "feature": "youtu.be",
+  "afmt": "251",
+  "muted": "0",
+  "conn": "3",
+  "cc": ".en",
+  "au_d": "en-US.4",
+  "docid": "gdDctjC10SY",
+  "ei": "J-KwapvgGtGFlu8P7cWtyAI",
+  "plid": "AAZb-YbW0h_gxcFM",
+  "sdetail": "f:youtu.be,",
+  "of": "2dVkz7e1rF9t_XNU6wGWIw",
+  "vm": "CAEQABgEOjJBSHFpSlRLOHpmNnlfQ3cycEI3SXF3Tl8tc2dqcUpKb2tNZXQ0VHRuWUEzOUxnT050QWJoQUNPdTRMVE5hWDJ4ejZiU1g1eFY3aWNyVl9jY00wWXRHbFRtT3psX1NhZDFPUkE1MW9Uai0yNTBpUnhFN1RaUGVFWEM4YVNiODRDeUczY1hVSGtwRDBGN1FlWnBpcVJORXlSdFBEd2I",
+  "vct": "179.000",
+  "vd": "250.281",
+  "vpl": "",
+  "vbu": "178.542-199.708,210.001-231.542",
+  "vbs": "0.000-250.281",
+  "vpa": "1",
+  "vsk": "0",
+  "ven": "0",
+  "vpr": "1",
+  "vrs": "4",
+  "vns": "2",
+  "vec": "null",
+  "vemsg": "",
+  "vvol": "1",
+  "vdom": "1",
+  "vsrc": "1",
+  "vw": "349",
+  "vh": "196",
+  "dvf": 0,
+  "tvf": 35,
+  "lct": "179.000",
+  "lsk": false,
+  "lmf": false,
+  "lbw": "22974298.052",
+  "lhd": "0.104",
+  "lst": "0.000",
+  "laa": "itag_251_type_3_src_reslicemakeSliceInfosMediaBytes_segsrc_reslicemakeSliceInfosMediaBytes_seg_19_range_3309186-3310294_time_199.9-200.0_off_163840_len_1109_end_1",
+  "lva": "itag_396_type_3_src_reslicemakeSliceInfosMediaBytes_segsrc_reslicemakeSliceInfosMediaBytes_seg_37_range_1802739-1815547_time_198.3-199.7_off_35204_len_12809_end_1",
+  "lar": "itag_251_type_3_src_reslicemakeSliceInfosMediaBytes_segsrc_reslicemakeSliceInfosMediaBytes_seg_19_range_3309186-3310294_time_199.9-200.0_off_163840_len_1109_end_1",
+  "lvr": "itag_396_type_3_src_reslicemakeSliceInfosMediaBytes_segsrc_reslicemakeSliceInfosMediaBytes_seg_37_range_1802739-1815547_time_198.3-199.7_off_35204_len_12809_end_1",
+  "laq": "0",
+  "lvq": "0",
+  "lab": "170.001-200.001,210.001-240.001",
+  "lvb": "178.542-199.708,206.708-231.542",
+  "reqBlocked": "readaheadmet",
+  "lsrt": "34809",
+  "ismb": 23258000,
+  "relative_loudness": "-8.950",
+  "optimal_format": "360p",
+  "user_qual": 0,
+  "release_version": "youtube.player.web_20260915_10_RC00",
+  "debug_videoId": "gdDctjC10SY",
+  "0sz": "false",
+  "op": "",
+  "yof": "false",
+  "dis": "",
+  "gpu": "ANGLE_(Qualcomm,_Adreno_(TM)_740,_OpenGL_ES_3.2)",
+  "ps": "blazer",
+  "js": "/s/player/4fd832e7/player-plasma-es6-en_US.vflset/base.js",
+  "debug_playbackQuality": "medium",
+  "debug_date": "Mon Sep 21 2026 02:54:04 GMT-0500 (Central Daylight Time)",
+  "origin": "https://m.youtube.com",
+  "timestamp": 1789977244209
+}https://youtu.be/gdDctjC10SY?t=179&si=3W75mE6UOtr8ITwQhttps://youtu.be/gdDctjC10SY?t=118&si=8JfgSx_jqbahqaQshttps://youtu.be/gdDctjC10SY?t=0&si=PRqWAnHF_MWhYm2breconcile a billing error or duplicate charges?Do you need this data formatted into a specific file type (like a clean CSV or Excel table)?Let me know what you need to do next with this history.# Chrome DevTools MCP
 
 [![npm chrome-devtools-mcp package](https://img.shields.io/npm/v/chrome-devtools-mcp.svg)](https://npmjs.org/package/chrome-devtools-mcp)
 
